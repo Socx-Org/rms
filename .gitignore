@@ -17,7 +17,6 @@ Thumbs.db
 
 # Patterns requested to be ignored before commit
 scaffold/
-docs/
 .venv/
 *.zip
 .env.*

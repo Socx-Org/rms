@@ -1,0 +1,173 @@
+
+<style>
+#erd3 svg { width: 100% !important; }
+#erd3 svg.erDiagram .divider path { stroke-opacity: 0.5; }
+#erd3 svg.erDiagram .row-rect-odd path,
+#erd3 svg.erDiagram .row-rect-odd rect,
+#erd3 svg.erDiagram .row-rect-even path,
+#erd3 svg.erDiagram .row-rect-even rect { stroke: none !important; }
+</style>
+<div id="erd3"></div>
+<script type="module">
+import mermaid from 'https://esm.sh/mermaid@11/dist/mermaid.esm.min.mjs';
+const dark = matchMedia('(prefers-color-scheme: dark)').matches;
+await document.fonts.ready;
+mermaid.initialize({
+  startOnLoad: false,
+  theme: 'base',
+  fontFamily: '"Anthropic Sans", sans-serif',
+  themeVariables: {
+    darkMode: dark,
+    fontSize: '12px',
+    fontFamily: '"Anthropic Sans", sans-serif',
+    lineColor: dark ? '#9c9a92' : '#73726c',
+    textColor: dark ? '#c2c0b6' : '#3d3d3a',
+    primaryColor: dark ? '#3C3489' : '#EEEDFE',
+    primaryBorderColor: dark ? '#7F77DD' : '#534AB7',
+    primaryTextColor: dark ? '#CECBF6' : '#26215C',
+    secondaryColor: dark ? '#085041' : '#E1F5EE',
+    secondaryBorderColor: dark ? '#1D9E75' : '#0F6E56',
+    secondaryTextColor: dark ? '#9FE1CB' : '#04342C',
+    tertiaryColor: dark ? '#633806' : '#FAEEDA',
+    tertiaryBorderColor: dark ? '#BA7517' : '#854F0B',
+    tertiaryTextColor: dark ? '#FAC775' : '#412402',
+  },
+});
+const diagram = `erDiagram
+  USERS {
+    uuid id PK
+    varchar firstname
+    varchar lastname
+    varchar email
+    varchar phone
+    varchar timezone
+    enum system_role
+    enum status
+    varchar api_key
+  }
+  SYSTEM_SETTINGS {
+    varchar key PK
+    text value
+    text description
+    uuid updated_by_id FK
+  }
+  EMAIL_WRAPPER_SETTINGS {
+    uuid id PK
+    uuid owner_id FK
+    text wrapper_html
+    boolean is_active
+  }
+  API_KEY_SCOPES {
+    uuid id PK
+    uuid user_id FK
+    varchar api_key_hash
+    enum scope
+  }
+  EVENTS {
+    uuid id PK
+    uuid owner_id FK
+    uuid created_by_id FK
+    varchar subject
+    text description
+    timestamptz event_datetime
+    varchar event_timezone
+    varchar location
+    enum status
+  }
+  EVENT_ACCESS {
+    uuid id PK
+    uuid event_id FK
+    uuid user_id FK
+    enum role
+    uuid granted_by_id FK
+  }
+  SUBSCRIBERS {
+    uuid id PK
+    uuid event_id FK
+    uuid user_id FK
+    varchar firstname
+    varchar lastname
+    varchar timezone
+    enum status
+  }
+  SUBSCRIBER_CONTACTS {
+    uuid id PK
+    uuid subscriber_id FK
+    enum channel
+    varchar contact_value
+    boolean is_primary
+    varchar label
+    enum status
+  }
+  REMINDERS {
+    uuid id PK
+    uuid event_id FK
+    timestamptz remind_at
+    varchar subject_template
+    text body_template
+    enum_array channels
+    enum status
+  }
+  REMINDER_DISPATCHES {
+    uuid id PK
+    uuid reminder_id FK
+    uuid subscriber_id FK
+    uuid contact_id FK
+    enum channel
+    varchar rendered_subject
+    text rendered_body
+    enum status
+    smallint attempts
+    timestamptz sent_at
+    text failure_reason
+  }
+  REMINDER_REPORTS {
+    uuid id PK
+    uuid reminder_id FK
+    int total_dispatches
+    int total_sent
+    int total_failed
+    int total_skipped
+    jsonb failure_details
+    boolean report_sent_to_owner
+  }
+
+  USERS ||--o{ EVENTS : "owns"
+  USERS ||--o{ EVENT_ACCESS : "has role in"
+  USERS ||--|| EMAIL_WRAPPER_SETTINGS : "customises"
+  USERS ||--o{ API_KEY_SCOPES : "restricts key via"
+  USERS ||--o{ SYSTEM_SETTINGS : "last updated by"
+  EVENTS ||--o{ EVENT_ACCESS : "controls"
+  EVENTS ||--o{ SUBSCRIBERS : "has"
+  EVENTS ||--o{ REMINDERS : "has (max 5)"
+  SUBSCRIBERS ||--o{ SUBSCRIBER_CONTACTS : "has"
+  REMINDERS ||--o{ REMINDER_DISPATCHES : "fans out to"
+  REMINDERS ||--|| REMINDER_REPORTS : "produces"
+  SUBSCRIBERS ||--o{ REMINDER_DISPATCHES : "receives"
+  SUBSCRIBER_CONTACTS ||--o{ REMINDER_DISPATCHES : "used in"
+`;
+const { svg } = await mermaid.render('erd3-svg', diagram);
+document.getElementById('erd3').innerHTML = svg;
+document.querySelectorAll('#erd3 svg.erDiagram .node').forEach(node => {
+  const firstPath = node.querySelector('path[d]');
+  if (!firstPath) return;
+  const d = firstPath.getAttribute('d');
+  const nums = d.match(/-?[\d.]+/g)?.map(Number);
+  if (!nums || nums.length < 8) return;
+  const xs = [nums[0], nums[2], nums[4], nums[6]];
+  const ys = [nums[1], nums[3], nums[5], nums[7]];
+  const x = Math.min(...xs), y = Math.min(...ys);
+  const w = Math.max(...xs) - x, h = Math.max(...ys) - y;
+  const rect = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+  rect.setAttribute('x', x); rect.setAttribute('y', y);
+  rect.setAttribute('width', w); rect.setAttribute('height', h);
+  rect.setAttribute('rx', '8');
+  for (const a of ['fill', 'stroke', 'stroke-width', 'class', 'style']) {
+    if (firstPath.hasAttribute(a)) rect.setAttribute(a, firstPath.getAttribute(a));
+  }
+  firstPath.replaceWith(rect);
+});
+document.querySelectorAll('#erd3 svg.erDiagram .row-rect-odd path, #erd3 svg.erDiagram .row-rect-even path').forEach(p => {
+  p.setAttribute('stroke', 'none');
+});
+</script>
