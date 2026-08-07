@@ -2,9 +2,9 @@ name: Deploy rms
 
 on:
   push:
-    branches: [main, central-infra]
+    branches: [main]
   pull_request:
-    branches: [main, central-infra]
+    branches: [main]
   workflow_dispatch:
 
 concurrency:
