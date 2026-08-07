@@ -1,0 +1,239 @@
+name: Deploy rms
+
+on:
+  push:
+    branches: [main, central-infra]
+  pull_request:
+    branches: [main, central-infra]
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-rms
+  cancel-in-progress: true
+
+
+jobs:
+
+  # ── API integration tests (Node / Jest) ────────────────────────────────────
+  # Runs on every push to main and every PR targeting main.
+  api-tests:
+    name: API tests
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER:     ${{ secrets.CI_DB_USER }}
+          POSTGRES_PASSWORD: ${{ secrets.CI_DB_PASSWORD }}
+          POSTGRES_DB:       ${{ secrets.CI_DB_NAME }}
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    env:
+      DATABASE_URL: ${{ secrets.CI_DATABASE_URL }}
+      JWT_SECRET:   ${{ secrets.CI_JWT_SECRET }}
+      NODE_ENV: test
+
+    steps:
+      - uses: actions/checkout@v6.0.2
+
+      - uses: actions/setup-node@v6.3.0
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - uses: actions/setup-python@v6.2.0
+        with:
+          python-version: '3.12'
+
+      - name: Install Node dependencies
+        run: npm ci
+
+      - name: Install Python dependencies (worker)
+        run: pip install -r apps/worker/requirements.txt
+
+      - name: Apply database schema
+        env:
+          PGPASSWORD: ${{ secrets.CI_DB_PASSWORD }}
+          CI_DB_USER: ${{ secrets.CI_DB_USER }}
+          CI_DB_NAME: ${{ secrets.CI_DB_NAME }}
+        run: |
+          psql -h localhost -U "$CI_DB_USER" -d "$CI_DB_NAME" -f infra/rms_001_initial_schema.sql
+          psql -h localhost -U "$CI_DB_USER" -d "$CI_DB_NAME" -f infra/rms_002_email_outbox.sql
+          psql -h localhost -U "$CI_DB_USER" -d "$CI_DB_NAME" -f infra/rms_003_revoked_tokens.sql
+          psql -h localhost -U "$CI_DB_USER" -d "$CI_DB_NAME" -f infra/rms_004_dispatch_retry_after.sql
+          psql -h localhost -U "$CI_DB_USER" -d "$CI_DB_NAME" -f infra/rms_005_super_admin_audit.sql
+          psql -h localhost -U "$CI_DB_USER" -d "$CI_DB_NAME" -c "UPDATE system_settings SET value = 'true' WHERE key = 'allow_public_registration';"
+
+      - name: Generate Prisma client
+        run: npx prisma generate --schema=packages/db/prisma/schema.prisma
+
+      - name: Run API tests
+        run: npm test --workspace=apps/api
+
+  # ── Python worker unit tests ──────────────────────────────────────────────
+  worker-tests:
+    name: Worker tests
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v6.0.2
+
+      - uses: actions/setup-python@v6.2.0
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r apps/worker/requirements.txt pytest
+
+      - name: Run worker tests
+        working-directory: apps/worker
+        run: pytest -q tests/
+
+  # ── Deploy to DigitalOcean droplet ────────────────────────────────────────  
+  deploy:
+    name: Deploy
+    needs: [api-tests, worker-tests]
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    environment: prod-lab-01
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build frontend
+        run: npm run build --workspace=apps/web
+
+      # - name: Test API
+      #   run: npm run test --workspace=apps/api --if-present
+
+      - name: Install production Node deps for server
+        run: |
+          # Install only production dependencies for the API workspace so we can
+          # include them in the release archive and avoid running `npm ci` on the droplet.
+          npm ci --workspace=apps/api --omit=dev
+
+      - name: Package repo (include apps/api/node_modules)
+        run: |
+          RELEASE_DIR="$RUNNER_TEMP/release"
+          rm -rf "$RELEASE_DIR"
+          mkdir -p "$RELEASE_DIR"
+          # Copy repository while excluding node_modules (we'll add apps/api/node_modules explicitly)
+          rsync -a --exclude='.git' --exclude='**/node_modules' ./ "$RELEASE_DIR/"
+          # If production deps were installed for apps/api, copy them into the release
+          if [ -d "apps/api/node_modules" ]; then
+            mkdir -p "$RELEASE_DIR/apps/api"
+            cp -a apps/api/node_modules "$RELEASE_DIR/apps/api/"
+          fi
+          ARCHIVE_PATH="$RUNNER_TEMP/release.tgz"
+          tar -C "$RELEASE_DIR" -czf "$ARCHIVE_PATH" .
+          cp "$ARCHIVE_PATH" ./release.tgz
+
+      - name: Upload to droplet
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.DROPLET_HOST }}
+          username: ${{ secrets.DROPLET_USER }}
+          key: ${{ secrets.DROPLET_SSH_KEY }}
+          source: "release.tgz"
+          target: "/tmp"
+
+      - name: Check remote systemd unit files
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.DROPLET_HOST }}
+          username: ${{ secrets.DROPLET_USER }}
+          key: ${{ secrets.DROPLET_SSH_KEY }}
+          script: |
+            set -eu
+            echo "Checking for systemd unit files"
+            for svc in rms-web rms-api rms-worker; do
+              if [ -f "/etc/systemd/system/${svc}.service" ]; then
+                echo "Found /etc/systemd/system/${svc}.service"
+              else
+                echo "MISSING: /etc/systemd/system/${svc}.service"
+                echo "Expected source (do-nginx-infra nginx-config branch):"
+                echo "  https://github.com/socx/do-nginx-infra/tree/nginx-config -> sites/${svc} or nginx/sites-available/${svc}"
+              fi
+            done
+
+      - name: Deploy and restart services
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.DROPLET_HOST }}
+          username: ${{ secrets.DROPLET_USER }}
+          key: ${{ secrets.DROPLET_SSH_KEY }}
+          script: |
+            set -euo pipefail
+            DEPLOY_USER="$(id -un)"
+            APP_DIR="/opt/apps/rms"
+            sudo mkdir -p "$APP_DIR"
+            sudo chown -R "$DEPLOY_USER:$DEPLOY_USER" "$APP_DIR"
+            if [ -s "$HOME/.nvm/nvm.sh" ]; then
+              . "$HOME/.nvm/nvm.sh"
+              nvm use node >/dev/null 2>&1 || true
+            fi
+            export PATH="$HOME/.nvm/versions/node/*/bin:$HOME/node_modules/.bin:/usr/local/bin:/usr/bin:$PATH"
+            NPM_BIN="$(command -v npm || true)"
+            if [ -z "$NPM_BIN" ]; then
+              echo "npm not found on remote host. Install Node.js for deploy user or system-wide." >&2
+              exit 1
+            fi
+
+            tar -xzf /tmp/release.tgz -C "$APP_DIR"
+            rm -f /tmp/release.tgz
+
+            cd "$APP_DIR"
+            # Run npm install on the remote. If it fails (OOM or other), fail fast
+            # to avoid leaving services in a half-updated state.
+            if ! "$NPM_BIN" ci; then
+              echo "Remote npm ci failed — aborting deployment to avoid partial upgrade." >&2
+              exit 1
+            fi
+
+            # Ensure Python worker venv and dependencies are present at the expected path
+            if [ -f "apps/worker/requirements.txt" ]; then
+              if [ ! -d "apps/worker/.venv" ]; then
+                python3 -m venv apps/worker/.venv
+              fi
+              apps/worker/.venv/bin/pip install --upgrade pip
+              apps/worker/.venv/bin/pip install -r apps/worker/requirements.txt
+              # do not attempt to change permissions on files we may not own
+              # (some environments prevent chmod by non-root). Assume venv python is executable.
+              :
+            fi
+
+            # Reload systemd to pick up any externally-managed unit file changes
+            sudo systemctl daemon-reload
+            for svc in rms-web rms-api rms-worker; do
+              if systemctl list-unit-files --type=service | grep -q "^${svc}\.service"; then
+                sudo systemctl enable "$svc"
+                # Stop any existing restart loop, clear failure counters, then start once.
+                sudo systemctl stop "$svc" || true
+                sudo systemctl reset-failed "$svc" || true
+                sudo systemctl start "$svc" || {
+                  echo "Service $svc failed to start; showing journal:";
+                  sudo journalctl -u "$svc" -n 200 --no-pager || true
+                }
+                sudo systemctl status "$svc" --no-pager || true
+              else
+                echo "Skipping missing unit: ${svc}.service"
+              fi
+            done

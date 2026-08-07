@@ -1,0 +1,913 @@
+import React, { useState, useRef, useMemo, useEffect } from 'react';
+import { useEditor, EditorContent } from '@tiptap/react';
+import StarterKit from '@tiptap/starter-kit';
+import Underline from '@tiptap/extension-underline';
+import Link from '@tiptap/extension-link';
+import {
+  useListReminders,
+  useCreateReminder,
+  useUpdateReminder,
+  useDeleteReminder,
+  usePreviewReminder,
+} from '../hooks/useReminders.js';
+
+// ── Constants ──────────────────────────────────────────────────────────────
+
+const RECURRENCE_OPTIONS = [
+  { value: 'NEVER',          label: 'Never (one-time)' },
+  { value: 'HOURLY',         label: 'Hourly' },
+  { value: 'DAILY',          label: 'Daily' },
+  { value: 'WEEKDAYS',       label: 'Weekdays (Mon–Fri)' },
+  { value: 'WEEKENDS',       label: 'Weekends (Sat–Sun)' },
+  { value: 'WEEKLY',         label: 'Weekly' },
+  { value: 'FORTNIGHTLY',    label: 'Fortnightly' },
+  { value: 'MONTHLY',        label: 'Monthly' },
+  { value: 'EVERY_3_MONTHS', label: 'Every 3 months' },
+  { value: 'EVERY_6_MONTHS', label: 'Every 6 months' },
+  { value: 'YEARLY',         label: 'Yearly' },
+];
+
+const RECURRENCE_BADGE_STYLES = {
+  NEVER:          'bg-gray-100 text-gray-600',
+  HOURLY:         'bg-blue-100 text-blue-700',
+  DAILY:          'bg-sky-100 text-sky-700',
+  WEEKDAYS:       'bg-cyan-100 text-cyan-700',
+  WEEKENDS:       'bg-teal-100 text-teal-700',
+  WEEKLY:         'bg-violet-100 text-violet-700',
+  FORTNIGHTLY:    'bg-purple-100 text-purple-700',
+  MONTHLY:        'bg-indigo-100 text-indigo-700',
+  EVERY_3_MONTHS: 'bg-pink-100 text-pink-700',
+  EVERY_6_MONTHS: 'bg-rose-100 text-rose-700',
+  YEARLY:         'bg-orange-100 text-orange-700',
+};
+
+const STATUS_BADGE_STYLES = {
+  SCHEDULED:  'bg-blue-100 text-blue-700',
+  PROCESSING: 'bg-yellow-100 text-yellow-700',
+  RECURRING:  'bg-violet-100 text-violet-700',
+  SENT:       'bg-green-100 text-green-700',
+  CANCELLED:  'bg-red-100 text-red-700',
+  FAILED:     'bg-red-200 text-red-800',
+};
+
+const TEMPLATE_VARIABLES = [
+  { name: 'subscriber_firstname',  label: 'subscriber_firstname' },
+  { name: 'subscriber_lastname',   label: 'subscriber_lastname' },
+  { name: 'subscriber_fullname',   label: 'subscriber_fullname' },
+  { name: 'event_subject',         label: 'event_subject' },
+  { name: 'event_description',     label: 'event_description' },
+  { name: 'event_datetime',        label: 'event_datetime' },
+  { name: 'event_date',            label: 'event_date' },
+  { name: 'event_time',            label: 'event_time' },
+  { name: 'event_location',        label: 'event_location' },
+  { name: 'event_timezone_label',  label: 'event_timezone_label' },
+  { name: 'owner_firstname',       label: 'owner_firstname' },
+  { name: 'owner_lastname',        label: 'owner_lastname' },
+  { name: 'owner_fullname',        label: 'owner_fullname' },
+  { name: 'reminder_datetime',     label: 'reminder_datetime' },
+  { name: 'occurrence_number',     label: 'occurrence_number' },
+];
+
+// ── Helpers ────────────────────────────────────────────────────────────────
+
+// ── Toolbar Button ─────────────────────────────────────────────────────────
+
+function ToolbarButton({ onClick, active, title, children }) {
+  return (
+    <button
+      type="button"
+      onMouseDown={e => { e.preventDefault(); onClick(); }}
+      title={title}
+      aria-pressed={active ?? false}
+      className={`rounded px-1.5 py-0.5 text-xs font-medium min-w-[1.75rem] transition-colors ${
+        active ? 'bg-indigo-100 text-indigo-700' : 'text-gray-600 hover:bg-gray-100'
+      }`}
+    >
+      {children}
+    </button>
+  );
+}
+
+// ── Rich Body Editor ────────────────────────────────────────────────────────
+
+function RichBodyEditor({ value, onChange, onEditorReady }) {
+  const editor = useEditor({
+    extensions: [
+      StarterKit,
+      Underline,
+      Link.configure({ openOnClick: false, autolink: true }),
+    ],
+    content: value || '',
+    onUpdate({ editor: ed }) {
+      onChange(ed.isEmpty ? '' : ed.getHTML());
+    },
+    editorProps: {
+      attributes: {
+        class: 'prose prose-sm max-w-none min-h-[120px] px-3 py-2 focus:outline-none',
+        'aria-label': 'Body template editor',
+        role: 'textbox',
+        'aria-multiline': 'true',
+      },
+    },
+  });
+
+  // Notify parent when editor instance is ready
+  useEffect(() => {
+    if (editor && onEditorReady) onEditorReady(editor);
+  }, [editor]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Sync initial HTML value into editor (for edit mode)
+  useEffect(() => {
+    if (!editor || !value) return;
+    if (editor.getHTML() !== value) {
+      editor.commands.setContent(value, false);
+    }
+  }, [editor]); // intentionally only on editor creation
+
+  return (
+    <div
+      className="rounded-md overflow-hidden outline outline-1 -outline-offset-1 outline-gray-300 focus-within:outline-2 focus-within:-outline-offset-2 focus-within:outline-indigo-600"
+    >
+      {/* Formatting toolbar */}
+      <div className="flex flex-wrap items-center gap-0.5 border-b border-gray-200 bg-gray-50 px-1.5 py-1">
+        <ToolbarButton
+          onClick={() => editor?.chain().focus().toggleBold().run()}
+          active={editor?.isActive('bold')}
+          title="Bold"
+        ><strong>B</strong></ToolbarButton>
+        <ToolbarButton
+          onClick={() => editor?.chain().focus().toggleItalic().run()}
+          active={editor?.isActive('italic')}
+          title="Italic"
+        ><em>I</em></ToolbarButton>
+        <ToolbarButton
+          onClick={() => editor?.chain().focus().toggleUnderline().run()}
+          active={editor?.isActive('underline')}
+          title="Underline"
+        ><span className="underline">U</span></ToolbarButton>
+        <span className="mx-1 self-stretch border-l border-gray-300" aria-hidden="true" />
+        <ToolbarButton
+          onClick={() => editor?.chain().focus().toggleHeading({ level: 2 }).run()}
+          active={editor?.isActive('heading', { level: 2 })}
+          title="Heading 2"
+        >H2</ToolbarButton>
+        <ToolbarButton
+          onClick={() => editor?.chain().focus().toggleHeading({ level: 3 }).run()}
+          active={editor?.isActive('heading', { level: 3 })}
+          title="Heading 3"
+        >H3</ToolbarButton>
+        <span className="mx-1 self-stretch border-l border-gray-300" aria-hidden="true" />
+        <ToolbarButton
+          onClick={() => editor?.chain().focus().toggleBulletList().run()}
+          active={editor?.isActive('bulletList')}
+          title="Bullet list"
+        >• List</ToolbarButton>
+        <ToolbarButton
+          onClick={() => editor?.chain().focus().toggleOrderedList().run()}
+          active={editor?.isActive('orderedList')}
+          title="Ordered list"
+        >1. List</ToolbarButton>
+        <span className="mx-1 self-stretch border-l border-gray-300" aria-hidden="true" />
+        <ToolbarButton
+          onClick={() => {
+            const prev = editor?.getAttributes('link').href;
+            // eslint-disable-next-line no-alert
+            const url = window.prompt('Link URL', prev ?? '');
+            if (url === null) return;
+            if (url === '') {
+              editor?.chain().focus().unsetLink().run();
+            } else {
+              editor?.chain().focus().setLink({ href: url }).run();
+            }
+          }}
+          active={editor?.isActive('link')}
+          title="Link"
+        >Link</ToolbarButton>
+        <span className="mx-1 self-stretch border-l border-gray-300" aria-hidden="true" />
+        <ToolbarButton
+          onClick={() => editor?.chain().focus().unsetAllMarks().clearNodes().run()}
+          title="Clear formatting"
+        >Clear</ToolbarButton>
+      </div>
+      <EditorContent editor={editor} />
+    </div>
+  );
+}
+
+// ── Variable Helper Component ──────────────────────────────────────────────
+
+function VariableHelper({ fieldRef, value, onChange, editor }) {
+  const [open, setOpen] = useState(false);
+
+  function insert(varName) {
+    const token = `{{${varName}}}`;
+    // TipTap rich-text editor: insert at cursor position
+    if (editor) {
+      editor.chain().focus().insertContent(token).run();
+      return;
+    }
+    // Plain textarea / input: insert at selection
+    const el = fieldRef?.current;
+    if (!el) {
+      onChange(value + token);
+      return;
+    }
+    const start = el.selectionStart ?? value.length;
+    const end   = el.selectionEnd   ?? value.length;
+    const newValue = value.slice(0, start) + token + value.slice(end);
+    onChange(newValue);
+    requestAnimationFrame(() => {
+      el.focus();
+      const pos = start + token.length;
+      el.setSelectionRange(pos, pos);
+    });
+  }
+
+  return (
+    <div className="mt-1">
+      <button
+        type="button"
+        onClick={() => setOpen(o => !o)}
+        aria-expanded={open}
+        aria-label="Toggle template variable helper"
+        className="text-xs text-indigo-600 hover:text-indigo-500 font-medium select-none"
+      >
+        {open ? '▲ Hide variables' : '▼ Insert variable'}
+      </button>
+      {open && (
+        <div
+          aria-label="Template variable helper"
+          className="mt-2 flex flex-wrap gap-1"
+        >
+          {TEMPLATE_VARIABLES.map(v => (
+            <button
+              key={v.name}
+              type="button"
+              title={`Insert {{${v.name}}}`}
+              onClick={() => insert(v.name)}
+              className="inline-flex items-center rounded px-1.5 py-0.5 text-xs font-mono bg-indigo-50 text-indigo-700 hover:bg-indigo-100 border border-indigo-200 cursor-pointer"
+            >
+              {`{{${v.name}}}`}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+const inputClass =
+  'block w-full rounded-md border-0 px-3 py-2 text-sm text-gray-900 outline outline-1 -outline-offset-1 outline-gray-300 focus:outline-2 focus:-outline-offset-2 focus:outline-indigo-600';
+
+function formatDatetime(iso, tz) {
+  if (!iso) return '—';
+  try {
+    return new Intl.DateTimeFormat('en-GB', {
+      dateStyle: 'medium',
+      timeStyle: 'short',
+      timeZone: tz || 'UTC',
+    }).format(new Date(iso));
+  } catch {
+    return iso;
+  }
+}
+
+function toDatetimeLocal(iso) {
+  if (!iso) return '';
+  try {
+    const d = new Date(iso);
+    const parts = new Intl.DateTimeFormat('en-CA', {
+      timeZone: 'UTC',
+      year: 'numeric', month: '2-digit', day: '2-digit',
+      hour: '2-digit', minute: '2-digit', hour12: false,
+    }).formatToParts(d);
+    const get = t => parts.find(p => p.type === t)?.value ?? '';
+    const hr = get('hour') === '24' ? '00' : get('hour');
+    return `${get('year')}-${get('month')}-${get('day')}T${hr}:${get('minute')}`;
+  } catch {
+    return iso.slice(0, 16);
+  }
+}
+
+function RecurrenceBadge({ recurrence }) {
+  const label = recurrence.replace(/_/g, ' ');
+  const style = RECURRENCE_BADGE_STYLES[recurrence] ?? 'bg-gray-100 text-gray-600';
+  return (
+    <span
+      aria-label={`Recurrence: ${recurrence}`}
+      className={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium capitalize ${style}`}
+    >
+      {label.charAt(0) + label.slice(1).toLowerCase()}
+    </span>
+  );
+}
+
+function StatusBadge({ status }) {
+  const style = STATUS_BADGE_STYLES[status] ?? 'bg-gray-100 text-gray-600';
+  return (
+    <span
+      aria-label={`Reminder status: ${status}`}
+      className={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium capitalize ${style}`}
+    >
+      {status.charAt(0) + status.slice(1).toLowerCase()}
+    </span>
+  );
+}
+
+// ── Occurrence schedule computation ───────────────────────────────────────
+
+function addMonths(date, months) {
+  const d = new Date(date);
+  const targetMonth = d.getMonth() + months;
+  d.setMonth(targetMonth);
+  // Clamp to last day of intended month if overflow (e.g. Jan 31 + 1 month → Feb 28)
+  const intendedMonth = ((targetMonth % 12) + 12) % 12;
+  if (d.getMonth() !== intendedMonth) {
+    d.setDate(0); // last day of intendedMonth
+  }
+  return d;
+}
+
+function nextWeekday(date, tz) {
+  let d = new Date(date.getTime() + 60 * 60 * 1000); // step at least 1 hour to escape self
+  // Advance until Mon–Fri in event timezone
+  for (let i = 0; i < 8; i++) {
+    const dow = Number(new Intl.DateTimeFormat('en-US', { timeZone: tz, weekday: 'short' }).format(d).slice(0, 2) === 'Sa' ? 6 : new Intl.DateTimeFormat('en-US', { timeZone: tz, weekday: 'narrow' }).format(d) === 'S' ? new Intl.DateTimeFormat('en-US', { timeZone: tz, weekday: 'short' }).format(d) === 'Sun' ? 0 : 6 : -1);
+    // Simpler: use numeric weekday
+    const parts = new Intl.DateTimeFormat('en-US', { timeZone: tz, weekday: 'short' }).format(d);
+    const isSat = parts === 'Sat';
+    const isSun = parts === 'Sun';
+    if (!isSat && !isSun) break;
+    d = new Date(d.getTime() + 24 * 60 * 60 * 1000);
+  }
+  return d;
+}
+
+function nextWeekendDay(date, tz) {
+  let d = new Date(date.getTime() + 60 * 60 * 1000);
+  for (let i = 0; i < 8; i++) {
+    const parts = new Intl.DateTimeFormat('en-US', { timeZone: tz, weekday: 'short' }).format(d);
+    if (parts === 'Sat' || parts === 'Sun') break;
+    d = new Date(d.getTime() + 24 * 60 * 60 * 1000);
+  }
+  return d;
+}
+
+function computeNext(current, recurrence, tz) {
+  const ms = current.getTime();
+  const H  = 60 * 60 * 1000;
+  const D  = 24 * H;
+  switch (recurrence) {
+    case 'HOURLY':         return new Date(ms + H);
+    case 'DAILY':          return new Date(ms + D);
+    case 'WEEKDAYS':       return nextWeekday(current, tz || 'UTC');
+    case 'WEEKENDS':       return nextWeekendDay(current, tz || 'UTC');
+    case 'WEEKLY':         return new Date(ms + 7 * D);
+    case 'FORTNIGHTLY':    return new Date(ms + 14 * D);
+    case 'MONTHLY':        return addMonths(current, 1);
+    case 'EVERY_3_MONTHS': return addMonths(current, 3);
+    case 'EVERY_6_MONTHS': return addMonths(current, 6);
+    case 'YEARLY':         return addMonths(current, 12);
+    default:               return null;
+  }
+}
+
+/**
+ * Returns { first3: Date[], final: Date | null }
+ * Walks occurrences until >= cutoff, collecting up to 3 and tracking the last valid one.
+ */
+function computeSchedulePreview(remindAt, recurrence, eventDatetime, tz) {
+  if (!remindAt || !recurrence || recurrence === 'NEVER') return null;
+  const cutoff  = eventDatetime ? new Date(eventDatetime) : null;
+  let   current = new Date(remindAt);
+
+  if (isNaN(current.getTime())) return null;
+  if (cutoff && current >= cutoff) return { first3: [], final: null };
+
+  const first3 = [];
+  let   final  = null;
+  const MAX_STEPS = 500;
+
+  for (let i = 0; i < MAX_STEPS; i++) {
+    if (cutoff && current >= cutoff) break;
+    if (first3.length < 3) first3.push(new Date(current));
+    final = new Date(current);
+    const next = computeNext(current, recurrence, tz);
+    if (!next || isNaN(next.getTime()) || next <= current) break;
+    current = next;
+  }
+
+  return { first3, final };
+}
+
+// ── Empty form state ────────────────────────────────────────────────────────
+
+function emptyForm() {
+  return {
+    remind_at: '',
+    subject_template: '',
+    body_template: '',
+    channels: [],
+    recurrence: 'NEVER',
+  };
+}
+
+function reminderToForm(r) {
+  return {
+    remind_at: toDatetimeLocal(r.remindAt),
+    subject_template: r.subjectTemplate ?? '',
+    body_template: r.bodyTemplate ?? '',
+    channels: (r.channels ?? []).map(c => c.toLowerCase()),
+    recurrence: r.recurrence ?? 'NEVER',
+  };
+}
+
+// ── Reminder Form Modal ─────────────────────────────────────────────────────
+
+function ReminderFormModal({ eventId, onClose, reminder = null, eventDatetime, eventTimezone }) {
+  const isEdit = !!reminder;
+  const create = useCreateReminder();
+  const update = useUpdateReminder();
+  const preview = usePreviewReminder();
+
+  const [form, setForm] = useState(() => (isEdit ? reminderToForm(reminder) : emptyForm()));
+  const [error, setError] = useState(null);
+  const [previewData, setPreviewData] = useState(null);
+  const [previewError, setPreviewError] = useState(null);
+
+  const subjectRef  = useRef(null);
+  const [bodyEditor, setBodyEditor] = useState(null);
+
+  const schedulePreview = useMemo(() => {
+    if (form.recurrence === 'NEVER' || !form.remind_at) return null;
+    const remindAtISO = new Date(form.remind_at).toISOString();
+    return computeSchedulePreview(remindAtISO, form.recurrence, eventDatetime, eventTimezone);
+  }, [form.recurrence, form.remind_at, eventDatetime, eventTimezone]);
+
+  const mutation = isEdit ? update : create;
+
+  function setField(name, value) {
+    setForm(f => ({ ...f, [name]: value }));
+  }
+
+  function toggleChannel(ch) {
+    setForm(f => ({
+      ...f,
+      channels: f.channels.includes(ch)
+        ? f.channels.filter(c => c !== ch)
+        : [...f.channels, ch],
+    }));
+  }
+
+  async function handleSubmit(e) {
+    e.preventDefault();
+    setError(null);
+
+    if (!form.remind_at) { setError('Remind at date & time is required.'); return; }
+    if (!form.subject_template.trim()) { setError('Subject template is required.'); return; }
+    if (!form.body_template.trim()) { setError('Body template is required.'); return; }
+    if (form.channels.length === 0) { setError('At least one channel must be selected.'); return; }
+
+    const payload = {
+      remind_at:        new Date(form.remind_at).toISOString(),
+      subject_template: form.subject_template.trim(),
+      body_template:    form.body_template.trim(),
+      channels:         form.channels,
+      recurrence:       form.recurrence,
+    };
+
+    try {
+      if (isEdit) {
+        await mutation.mutateAsync({ eventId, reminderId: reminder.id, ...payload });
+      } else {
+        await mutation.mutateAsync({ eventId, ...payload });
+      }
+      onClose();
+    } catch (err) {
+      setError(err?.response?.data?.error?.message ?? err?.message ?? 'Failed to save reminder.');
+    }
+  }
+
+  async function handlePreview() {
+    setPreviewError(null);
+    setPreviewData(null);
+    if (!reminder) return;
+    try {
+      const data = await preview.mutateAsync({ eventId, reminderId: reminder.id });
+      setPreviewData(data);
+    } catch (err) {
+      setPreviewError(err?.response?.data?.error?.message ?? err?.message ?? 'Preview failed.');
+    }
+  }
+
+  return (
+    <div
+      role="dialog"
+      aria-modal="true"
+      aria-label={isEdit ? 'Edit reminder' : 'Add reminder'}
+      className="fixed inset-0 z-50 overflow-y-auto"
+    >
+      {/* Backdrop */}
+      <div className="fixed inset-0 bg-black/30" onClick={onClose} aria-hidden="true" />
+
+      <div className="flex min-h-full items-center justify-center px-4 py-8">
+        <div className="relative w-full max-w-lg rounded-xl bg-white shadow-xl p-6">
+          <h2 className="text-lg font-bold text-gray-900 mb-4">
+            {isEdit ? 'Edit reminder' : 'Add reminder'}
+          </h2>
+
+          <form onSubmit={handleSubmit} noValidate className="space-y-4" aria-label={isEdit ? 'Edit reminder form' : 'Add reminder form'}>
+            {error && (
+              <div role="alert" className="rounded-md bg-red-50 px-4 py-3 text-sm text-red-700 ring-1 ring-red-200">
+                {error}
+              </div>
+            )}
+
+            <div>
+              <label htmlFor="rm-remind-at" className="block text-sm font-medium text-gray-700 mb-1">
+                Remind at <span aria-hidden className="text-red-500">*</span>
+              </label>
+              <input
+                id="rm-remind-at"
+                type="datetime-local"
+                value={form.remind_at}
+                onChange={e => setField('remind_at', e.target.value)}
+                className={inputClass}
+              />
+            </div>
+
+            <div>
+              <label htmlFor="rm-subject" className="block text-sm font-medium text-gray-700 mb-1">
+                Subject template <span aria-hidden className="text-red-500">*</span>
+              </label>
+              <input
+                id="rm-subject"
+                ref={subjectRef}
+                type="text"
+                value={form.subject_template}
+                onChange={e => setField('subject_template', e.target.value)}
+                placeholder="e.g. Reminder: {{event_subject}}"
+                className={inputClass}
+              />
+              <VariableHelper
+                fieldRef={subjectRef}
+                value={form.subject_template}
+                onChange={v => setField('subject_template', v)}
+              />
+            </div>
+
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">
+                Body template <span aria-hidden className="text-red-500">*</span>
+              </label>
+              <RichBodyEditor
+                value={form.body_template}
+                onChange={v => setField('body_template', v)}
+                onEditorReady={setBodyEditor}
+              />
+              <VariableHelper
+                editor={bodyEditor}
+                value={form.body_template}
+                onChange={v => setField('body_template', v)}
+              />
+            </div>
+
+            <fieldset>
+              <legend className="text-sm font-medium text-gray-700 mb-1">
+                Channels <span aria-hidden className="text-red-500">*</span>
+              </legend>
+              <div className="flex gap-4">
+                <label className="flex items-center gap-2 text-sm text-gray-700 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={form.channels.includes('email')}
+                    onChange={() => toggleChannel('email')}
+                    className="rounded border-gray-300 text-indigo-600 focus:ring-indigo-600"
+                  />
+                  Email
+                </label>
+                <label className="flex items-center gap-2 text-sm text-gray-700 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={form.channels.includes('sms')}
+                    onChange={() => toggleChannel('sms')}
+                    className="rounded border-gray-300 text-indigo-600 focus:ring-indigo-600"
+                  />
+                  SMS
+                </label>
+              </div>
+            </fieldset>
+
+            <div>
+              <label htmlFor="rm-recurrence" className="block text-sm font-medium text-gray-700 mb-1">
+                Recurrence
+              </label>
+              <select
+                id="rm-recurrence"
+                value={form.recurrence}
+                onChange={e => setField('recurrence', e.target.value)}
+                className={inputClass}
+              >
+                {RECURRENCE_OPTIONS.map(opt => (
+                  <option key={opt.value} value={opt.value}>{opt.label}</option>
+                ))}
+              </select>
+            </div>
+
+            {/* Occurrence schedule preview */}
+            {schedulePreview && (
+              <div
+                aria-label="Occurrence schedule preview"
+                className="rounded-md bg-indigo-50 px-4 py-3 text-sm text-indigo-900 ring-1 ring-indigo-200 space-y-2"
+              >
+                <p className="font-semibold text-indigo-700">Scheduled occurrences</p>
+                {schedulePreview.first3.length === 0 ? (
+                  <p className="text-xs text-indigo-600">No occurrences before the event date.</p>
+                ) : (
+                  <ol className="list-decimal list-inside space-y-0.5">
+                    {schedulePreview.first3.map((d, i) => (
+                      <li key={i} className="text-xs">
+                        {formatDatetime(d.toISOString(), eventTimezone || 'UTC')}
+                      </li>
+                    ))}
+                  </ol>
+                )}
+                {schedulePreview.final &&
+                  schedulePreview.first3.length > 0 &&
+                  schedulePreview.final.getTime() !== schedulePreview.first3[schedulePreview.first3.length - 1].getTime() && (
+                  <p className="text-xs text-indigo-600">
+                    <span className="font-medium">Final occurrence:</span>{' '}
+                    {formatDatetime(schedulePreview.final.toISOString(), eventTimezone || 'UTC')}
+                  </p>
+                )}
+              </div>
+            )}
+
+            <div className="flex items-center justify-between pt-2">
+              {isEdit && (
+                <button
+                  type="button"
+                  onClick={handlePreview}
+                  disabled={preview.isPending}
+                  className="text-sm text-indigo-600 hover:text-indigo-500 disabled:opacity-50"
+                >
+                  {preview.isPending ? 'Loading preview…' : 'Preview occurrence'}
+                </button>
+              )}
+              {!isEdit && <span />}
+              <div className="flex gap-3">
+                <button
+                  type="button"
+                  onClick={onClose}
+                  className="rounded-md px-4 py-2 text-sm font-medium text-gray-700 ring-1 ring-gray-300 hover:bg-gray-50"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={mutation.isPending}
+                  className="rounded-md bg-indigo-600 px-4 py-2 text-sm font-semibold text-white shadow-sm hover:bg-indigo-500 disabled:opacity-60"
+                >
+                  {mutation.isPending ? 'Saving…' : (isEdit ? 'Save changes' : 'Add reminder')}
+                </button>
+              </div>
+            </div>
+          </form>
+
+          {/* Occurrence preview panel */}
+          {previewError && (
+            <div role="alert" className="mt-4 rounded-md bg-red-50 px-4 py-3 text-sm text-red-700 ring-1 ring-red-200">
+              {previewError}
+            </div>
+          )}
+          {previewData && (
+            <div
+              aria-label="Occurrence preview"
+              className="mt-4 rounded-md bg-gray-50 px-4 py-3 text-sm text-gray-800 ring-1 ring-gray-200 space-y-2"
+            >
+              <p className="font-semibold text-gray-700">Occurrence preview</p>
+              {previewData.renderedSubject != null && (
+                <p><span className="font-medium">Subject:</span> {previewData.renderedSubject}</p>
+              )}
+              {previewData.renderedBody != null && (
+                <div>
+                  <span className="font-medium block mb-1">Body:</span>
+                  <div
+                    className="prose prose-sm max-w-none text-gray-700"
+                    // eslint-disable-next-line react/no-danger
+                    dangerouslySetInnerHTML={{ __html: previewData.renderedBody }}
+                  />
+                </div>
+              )}
+              {previewData.nextRemindAt && (
+                <p className="text-xs text-gray-500">
+                  Next occurrence: {formatDatetime(previewData.nextRemindAt, 'UTC')}
+                </p>
+              )}
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── Reminder Row ────────────────────────────────────────────────────────────
+
+function ReminderRow({ reminder, eventId, canEdit, canDelete, eventTimezone, eventDatetime }) {
+  const [showEdit, setShowEdit] = useState(false);
+  const [showConfirm, setShowConfirm] = useState(false);
+  const deleteReminder = useDeleteReminder();
+  const [deleteError, setDeleteError] = useState(null);
+
+  const isEditable = canEdit && !['RECURRING', 'SENT', 'CANCELLED', 'FAILED'].includes(reminder.status);
+
+  async function handleDelete() {
+    setDeleteError(null);
+    try {
+      await deleteReminder.mutateAsync({ eventId, reminderId: reminder.id });
+      setShowConfirm(false);
+    } catch (err) {
+      setDeleteError(err?.response?.data?.error?.message ?? err?.message ?? 'Delete failed.');
+    }
+  }
+
+  return (
+    <>
+      <li className="rounded-lg border border-gray-200 px-4 py-3 space-y-2" aria-label={`Reminder: ${reminder.subjectTemplate}`}>
+        <div className="flex items-start justify-between gap-2 flex-wrap">
+          <div className="flex items-center gap-2 flex-wrap">
+            <span className="text-sm font-medium text-gray-900">{reminder.subjectTemplate}</span>
+            <StatusBadge status={reminder.status} />
+            {reminder.recurrence !== 'NEVER' && <RecurrenceBadge recurrence={reminder.recurrence} />}
+          </div>
+          <div className="flex items-center gap-2">
+            {isEditable && (
+              <button
+                type="button"
+                onClick={() => setShowEdit(true)}
+                className="text-xs font-medium text-indigo-600 hover:text-indigo-500"
+              >
+                Edit
+              </button>
+            )}
+            {canDelete && (
+              <button
+                type="button"
+                onClick={() => setShowConfirm(true)}
+                aria-label={`Cancel reminder ${reminder.subjectTemplate}`}
+                className="text-xs font-medium text-red-600 hover:text-red-500"
+              >
+                Cancel
+              </button>
+            )}
+          </div>
+        </div>
+
+        <div className="text-xs text-gray-500 space-y-0.5">
+          <p>
+            <span className="font-medium">Remind at:</span>{' '}
+            {formatDatetime(reminder.remindAt, eventTimezone)}
+          </p>
+          <p>
+            <span className="font-medium">Channels:</span>{' '}
+            {(reminder.channels ?? []).join(', ')}
+          </p>
+          {reminder.occurrenceCount > 0 && (
+            <p>
+              <span className="font-medium">Occurrences sent:</span>{' '}
+              {reminder.occurrenceCount}
+            </p>
+          )}
+        </div>
+
+        {deleteError && (
+          <p role="alert" className="text-xs text-red-600">{deleteError}</p>
+        )}
+      </li>
+
+      {showEdit && (
+        <ReminderFormModal
+          eventId={eventId}
+          reminder={reminder}
+          onClose={() => setShowEdit(false)}
+          eventDatetime={eventDatetime}
+          eventTimezone={eventTimezone}
+        />
+      )}
+
+      {showConfirm && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-label="Confirm cancel reminder"
+          className="fixed inset-0 z-50 flex items-center justify-center"
+        >
+          <div className="fixed inset-0 bg-black/30" onClick={() => setShowConfirm(false)} aria-hidden="true" />
+          <div className="relative w-full max-w-sm rounded-xl bg-white shadow-xl p-6 space-y-4">
+            <h3 className="text-base font-semibold text-gray-900">Cancel this reminder?</h3>
+            <p className="text-sm text-gray-600">
+              This will cancel the reminder. If it has already dispatched, it cannot be un-cancelled.
+            </p>
+            {deleteError && (
+              <p role="alert" className="text-sm text-red-600">{deleteError}</p>
+            )}
+            <div className="flex justify-end gap-3">
+              <button
+                type="button"
+                onClick={() => setShowConfirm(false)}
+                className="rounded-md px-4 py-2 text-sm font-medium text-gray-700 ring-1 ring-gray-300 hover:bg-gray-50"
+              >
+                Keep
+              </button>
+              <button
+                type="button"
+                onClick={handleDelete}
+                disabled={deleteReminder.isPending}
+                className="rounded-md bg-red-600 px-4 py-2 text-sm font-semibold text-white shadow-sm hover:bg-red-500 disabled:opacity-60"
+              >
+                {deleteReminder.isPending ? 'Cancelling…' : 'Cancel reminder'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </>
+  );
+}
+
+// ── Reminders Tab ──────────────────────────────────────────────────────────
+
+/**
+ * Props:
+ *  eventId       – string
+ *  isOwner       – boolean
+ *  canWrite      – boolean (OWNER or CONTRIBUTOR + event ACTIVE)
+ *  eventTimezone – string
+ *  eventDatetime – string (ISO UTC)
+ */
+export default function RemindersTab({ eventId, isOwner, canWrite, eventTimezone, eventDatetime }) {
+  const { data: reminders = [], isLoading, isError, error } = useListReminders(eventId);
+  const [showAdd, setShowAdd] = useState(false);
+
+  if (isLoading) {
+    return <p className="text-sm text-gray-500 py-4">Loading reminders…</p>;
+  }
+
+  if (isError) {
+    return (
+      <div role="alert" className="rounded-md bg-red-50 px-4 py-3 text-sm text-red-700 ring-1 ring-red-200">
+        {error?.response?.data?.error?.message ?? error?.message ?? 'Failed to load reminders.'}
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-4" aria-label="Reminders">
+      {/* Header */}
+      <div className="flex items-center justify-between">
+        <h2 className="text-sm font-semibold text-gray-700">
+          Reminders{reminders.length > 0 ? ` (${reminders.length})` : ''}
+        </h2>
+        {canWrite && reminders.length < 5 && (
+          <button
+            type="button"
+            onClick={() => setShowAdd(true)}
+            className="rounded-md bg-indigo-600 px-3 py-1.5 text-xs font-semibold text-white shadow-sm hover:bg-indigo-500"
+          >
+            + Add reminder
+          </button>
+        )}
+      </div>
+
+      {/* List */}
+      {reminders.length === 0 ? (
+        <p className="text-sm text-gray-400 italic py-2">No reminders yet.</p>
+      ) : (
+        <ul className="space-y-3" aria-label="Reminders list">
+          {reminders.map(r => (
+            <ReminderRow
+              key={r.id}
+              reminder={r}
+              eventId={eventId}
+              canEdit={canWrite}
+              canDelete={isOwner}
+              eventTimezone={eventTimezone}
+              eventDatetime={eventDatetime}
+            />
+          ))}
+        </ul>
+      )}
+
+      {/* Add modal */}
+      {showAdd && (
+        <ReminderFormModal
+          eventId={eventId}
+          onClose={() => setShowAdd(false)}
+          eventDatetime={eventDatetime}
+          eventTimezone={eventTimezone}
+        />
+      )}
+    </div>
+  );
+}
