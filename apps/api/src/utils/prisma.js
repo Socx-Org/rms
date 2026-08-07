@@ -2,6 +2,13 @@ import { PrismaClient } from '@prisma/client';
 import dotenv from 'dotenv';
 import path from 'path';
 import fs from 'fs';
+import { loadCredentialsIntoEnv } from './credentials.js';
+
+// Under systemd (production), populate DATABASE_URL/JWT_SECRET from
+// LoadCredential= files first -- this runs before PrismaClient is
+// instantiated below, since this module's own dotenv fallback (and
+// index.js's) only apply when CREDENTIALS_DIRECTORY is unset.
+loadCredentialsIntoEnv();
 
 // Ensure environment variables are loaded before PrismaClient is instantiated.
 // Load .env first, then fall back to .env.dev when DATABASE_URL is missing.
