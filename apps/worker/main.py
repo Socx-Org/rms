@@ -40,6 +40,12 @@ if not loaded:
   load_dotenv(override=True)
   logging.getLogger(__name__).info('Loaded environment from default lookup')
 
+# Under systemd (production), overwrite DATABASE_URL/SMTP_PASSWORD from
+# LoadCredential= files -- takes precedence over anything dotenv loaded
+# above (no-op in dev/CI, where CREDENTIALS_DIRECTORY is unset).
+from engine.credentials import load_credentials_into_env
+load_credentials_into_env()
+
 # Log selected important envs for debugging
 logging.getLogger(__name__).info('USE_SEND_GRID=%s SENDGRID_API_KEY_SET=%s', os.environ.get('USE_SEND_GRID'), bool(os.environ.get('SENDGRID_API_KEY')))
 
