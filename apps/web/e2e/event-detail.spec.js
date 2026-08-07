@@ -304,7 +304,11 @@ test.describe('Events list — subject links to detail page', () => {
     );
 
     await page.goto('/events');
-    await page.getByRole('link', { name: 'Annual Team Meeting' }).click();
+    // exact: true is required -- a second, separate link on the same row
+    // ("View details for Annual Team Meeting") has an aria-label that
+    // *contains* this text, and Playwright's default name match is a
+    // substring match, making the plain locator ambiguous between the two.
+    await page.getByRole('link', { name: 'Annual Team Meeting', exact: true }).click();
     await expect(page).toHaveURL(new RegExp(`/events/${EVENT_ID}$`));
     await expect(page.getByRole('heading', { name: /event details/i, level: 1 })).toBeVisible();
   });

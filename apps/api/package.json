@@ -12,7 +12,7 @@
   },
   "jest": {
     "setupFiles": ["<rootDir>/src/test_helpers/setup-env.js"],
-    "globalTeardown": "<rootDir>/src/jest.teardown.js"
+    "globalTeardown": "<rootDir>/src/jest.teardown.cjs"
   },
   "dependencies": {
     "@prisma/client": "^5.0.0",
