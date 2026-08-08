@@ -31,7 +31,7 @@ Environment=SMTP_HOST=smtp.hostinger.com
 Environment=SMTP_PORT=465
 Environment=SMTP_USER=info@basemathlimited.co.uk
 Environment=SMTP_FROM_EMAIL=info@basemathlimited.co.uk
-Environment=SMTP_FROM_NAME=Socx Reminder Management System
+Environment="SMTP_FROM_NAME=Socx Reminder Management System"
 
 # Secrets via systemd credentials (ADR-130, SEC-010.3) -- read by
 # apps/worker/engine/credentials.py at startup.
