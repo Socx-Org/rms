@@ -165,7 +165,7 @@ jobs:
       - name: Package release
         run: |
           tar -czf release.tar.gz \
-            apps/api apps/worker packages/db \
+            apps/api apps/worker packages/db packages/email \
             node_modules package.json package-lock.json
 
       - name: Deploy to droplet
