@@ -48,6 +48,18 @@ app.use('/api/v1/events', subscribersRouter);
 app.use('/api/v1/admin',  adminRouter);
 
 // Health endpoint under /api checks database connectivity.
+// Liveness only (reference/monitoring's health-router.ts pattern): no
+// downstream dependency check. If the process is up, it's alive, even if
+// the database is briefly unreachable -- conflating the two turns a DB
+// blip into a restart loop that can't fix a DB outage. This is what
+// reference/deployment's health gate and the real DigitalOcean uptime
+// check (reference/monitoring/terraform/monitoring.tf, already targeting
+// this exact path) poll.
+app.get('/healthz', (req, res) => {
+	res.status(200).json({ status: 'ok', service: 'rms-api' });
+});
+
+// Readiness: DB-gated, pre-existing. Distinct from /healthz above.
 app.get('/api/health', async (req, res) => {
 	try {
 		await prisma.$queryRawUnsafe('SELECT 1');

@@ -194,5 +194,5 @@ jobs:
 
           scp $SSH_OPTS release.tar.gz "${REMOTE}:${REMOTE_TARBALL}"
           ssh $SSH_OPTS "$REMOTE" \
-            "sudo SERVICES='rms-api.service rms-worker.service' HEALTH_URL='http://127.0.0.1:3002/' /opt/deploy/scripts/deploy-release.sh rms '${VERSION}' '${REMOTE_TARBALL}'"
+            "sudo SERVICES='rms-api.service rms-worker.service' HEALTH_URL='http://127.0.0.1:3002/healthz' /opt/deploy/scripts/deploy-release.sh rms '${VERSION}' '${REMOTE_TARBALL}'"
           ssh $SSH_OPTS "$REMOTE" "rm -f '${REMOTE_TARBALL}'"
