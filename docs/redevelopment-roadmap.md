@@ -9,9 +9,9 @@ Tracked as `Product: RMS` items in GitHub Project #2 ("SOCX Application Modernis
 | Phase | Name | Status |
 | ----- | ---- | ------ |
 | 0 | Foundation | **Done** — `Socx-Org/rms#1` |
-| 1 | Infrastructure Alignment | In progress |
-| 2A | Structural Refactoring | Not started |
-| 2B | Data Layer Modernisation | Not started |
+| 1 | Infrastructure Alignment | **Done** — `Socx-Org/rms#9` |
+| 2A | Structural Refactoring | **Done** — `Socx-Org/rms#17` |
+| 2B | Data Layer Modernisation | **Closed** — resolved at the platform level, no RMS code change required (`socx-platform#94`/`ADR-200`) |
 | — | Platform Alignment | Not started (renamed from "Phase 3") |
 
 No phase is blocked by Platform Evolution work unless a dependency is genuinely critical — interim implementations are used and swapped later where a platform capability doesn't exist yet.
@@ -20,7 +20,7 @@ No phase is blocked by Platform Evolution work unless a dependency is genuinely 
 
 Bring the real RMS codebase into `Socx-Org/rms` as tracked, shared git history, with real, passing test suites. Closed 2026-08-07: `#1`–`#8`, commit `8af6343` (import), `741/741` real tests passing. See `Socx-Org/rms#1` for full success criteria and evidence.
 
-### Phase 1 — Infrastructure Alignment (in progress)
+### Phase 1 — Infrastructure Alignment (done)
 
 **Finding that reshapes this phase's scope (2026-08-08, re-verified directly against real repo/infra state before starting):** RMS has never actually been deployed to `prod-lab-01`, the platform's real rebuilt droplet (`ADR-180`) — its hostname currently returns a clean `502`; nginx is configured and TLS is live (`reference/nginx/sites/rms.conf` already deployed), nothing is listening behind it. This is RMS's *first* real deployment, not a migration of an already-running production app. The platform's reference implementations for exactly this (`reference/security`, `reference/systemd`, `reference/deployment`, `reference/monitoring`, `reference/nginx`) are already Approved, and in nginx's/monitoring's case already live against RMS's own hostname — so "edge/TLS migration" is effectively already done at the infra level. The real work is getting RMS's app to stand up behind what already exists, replacing the bespoke mechanisms below with the platform's reference implementations rather than continuing to build the bespoke path out further.
 
@@ -41,13 +41,29 @@ Bring the real RMS codebase into `Socx-Org/rms` as tracked, shared git history, 
 
 **Success criteria:** RMS's API and worker run as real, versioned `systemd` services on `prod-lab-01`; a deploy is a real `deploy-release.sh` invocation with an automatic-rollback health gate, not an in-place `npm ci`; production secrets are provisioned via `reference/security`, not hand-placed; the existing DigitalOcean uptime check for `rms` reports real `UP` status.
 
-### Phase 2A — Structural Refactoring (not started)
+**Closed 2026-08-08, `Socx-Org/rms#9`, all five sub-issues (`#10`–`#14`).** All success criteria met with real evidence — see the Epic's own closing evidence for the full list. RMS is live in production at `https://rms.socx.org.uk` (API, worker, and web frontend), for the first time in its history.
 
-Application-level restructuring to align with `ENG-050`/`ENG-060` (repository structure, naming conventions) and any Platform Patterns identified along the way. Scope to be detailed when Phase 1 is substantially through.
+### Phase 2A — Structural Refactoring (done)
 
-### Phase 2B — Data Layer Modernisation (not started)
+Real discovery against `ENG-050`/`ENG-060` and the relevant reference implementations (`reference/application`, `reference/systemd`, `reference/nginx`), not assumed. Most apparent gaps resolved on inspection — RMS's monorepo layout, unprefixed env vars, and test locations all already matched `reference/application`'s own convention.
 
-Resolve the two-ORM situation (Prisma + SQLAlchemy against one database) and align schema-migration practice with the platform's data standards. Scope to be detailed when Phase 2A is substantially through.
+Two genuine RMS-owned findings, both fixed: no `LICENSE` file (`ENG-050.1`) — added, proprietary/internal, copyright holder Socx Organisation (SOCX software is confirmed not open source; `socx-platform`'s own `LICENSE` was also corrected to match); four dead legacy artifacts (`infra/pm2/`, `infra/supervisor/`, `infra/scripts/bootstrap-server.sh`, stale `infra/nginx/rms.conf`) removed, plus a real `README.md` accuracy pass (actual Node 24/Python 3.14, actual `systemd`+`deploy-release.sh` mechanism, actual hand-rolled-poll-loop worker, not APScheduler).
+
+Two genuine platform-level findings deliberately routed to Platform Evolution instead of RMS's own backlog — RMS stayed unchanged pending those: `ENG-060.4`'s infra-naming rule doesn't match `reference/systemd`/`reference/nginx`'s own actual naming (`socx-platform#89`, still open); the `LoadCredential=` env-var shim (`credentials.js`/`credentials.py`, from Phase 1's `#10`) as a candidate Platform Pattern (`socx-platform#90`, still open).
+
+**Closed 2026-08-08, `Socx-Org/rms#17`, both sub-issues (`#18`, `#19`).**
+
+### Phase 2B — Data Layer Modernisation (closed, no RMS code change)
+
+Originally framed as "resolve the two-ORM situation (Prisma + SQLAlchemy against one database)." Real investigation found this framing didn't hold up: RMS's worker doesn't actually use SQLAlchemy as an ORM (no model classes, just raw SQL via `text()` queries), and — more importantly — the platform's own `ADR-090` had explicitly, deliberately deferred the Prisma-vs-raw-SQL decision to "a dedicated future ADR" that didn't exist yet. This was never RMS's decision to make unilaterally, the same governance principle already applied to Phase 2A's `ENG-060.4` finding.
+
+Routed to Platform Evolution as a Spike (`socx-platform#94`), which produced `ADR-200`: the platform default going forward is raw SQL + a repository pattern (matching `reference/application`), not Prisma platform-wide — **but RMS's existing, live Prisma usage is explicitly, deliberately exempted, not required to migrate.** `ADR-090` amended to record the resolution.
+
+**Net effect: Phase 2B closes with zero RMS code changes.** The "problem" was resolved by naming and formally accepting the divergence, not by migrating away from it.
+
+Separately, real discovery during this phase found RMS's production database has **zero backup coverage** (`OPS-060.1` violation, confirmed directly on `prod-lab-01`) — tracked as `Socx-Org/rms#24`, deliberately deferred by the platform owner until RMS has real user data worth protecting (currently 1 account). Not part of Phase 2B's original scope, surfaced by the same investigation.
+
+**Closed 2026-08-08.**
 
 ### Platform Alignment (not started, renamed from "Phase 3")
 
