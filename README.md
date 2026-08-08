@@ -3,10 +3,12 @@
 A reminder-centred notification platform.
 
 ## Stack
-- **API**: Node.js 20 + Express 5 + Prisma
-- **Worker**: Python 3.12 + APScheduler
+- **API**: Node.js 24 + Express 5 + Prisma
+- **Worker**: Python 3.14, a hand-rolled poll loop (not APScheduler)
 - **Web**: React 18 + Vite + TanStack Query
 - **Database**: PostgreSQL 16
+
+Deployed as real, versioned `systemd` services (`rms-api`, `rms-worker`) via `reference/deployment`'s `deploy-release.sh` — see `infra/systemd/` and `.github/workflows/deploy.yml`.
 
 ## Quick start (development)
 
@@ -123,9 +125,8 @@ apps/
 packages/
   db/           Prisma schema (shared)
 infra/
-  nginx/        Nginx reverse proxy config
-  pm2/          PM2 process config (API)
-  supervisor/   Supervisor config (Python worker)
+  nginx/        Real, deployed nginx config (rms-prod-lab-01.conf)
+  systemd/      rms-api / rms-worker service units (reference/systemd)
 .github/
   workflows/    GitHub Actions CI/CD
 ```
