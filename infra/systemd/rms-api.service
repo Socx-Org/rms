@@ -1,0 +1,52 @@
+# reference/systemd, adapted for RMS (ADR-040). Deliberate deviations from
+# the template, both load-bearing:
+#   - ExecStart points at apps/api/src/index.js, not .../dist/index.js --
+#     RMS's API is plain JS with no build step (see package.json: `"start":
+#     "node src/index.js"`).
+#   - LoadCredential= names are database_url/jwt_secret (one full connection
+#     string), not the template's decomposed db_password -- Prisma's
+#     DATABASE_URL env var expects one URL string, and apps/api/src/utils/
+#     credentials.js reads exactly these two names.
+
+[Unit]
+Description=rms API
+After=network-online.target postgresql.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=rms
+Group=rms
+
+WorkingDirectory=/opt/rms/current
+ExecStart=/usr/bin/node /opt/rms/current/apps/api/src/index.js
+Restart=on-failure
+RestartSec=5
+
+# Non-secret configuration only (SEC-010.1); SOCX_ENV makes the environment
+# tier identifiable at runtime (OPS-010.2).
+Environment=NODE_ENV=production
+Environment=SOCX_ENV=production
+Environment=PORT=3002
+Environment=APP_DOMAIN=https://rms.socx.org.uk
+Environment=WEB_URL=https://rms.socx.org.uk
+
+# Secrets via systemd credentials (ADR-130, SEC-010.3) -- read by
+# apps/api/src/utils/credentials.js at startup.
+LoadCredential=database_url:/etc/credentials/rms/database_url
+LoadCredential=jwt_secret:/etc/credentials/rms/jwt_secret
+
+# Hardening -- secure by default; loosen ReadWritePaths only for paths the app owns.
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+ReadWritePaths=/opt/rms/shared
+
+# journald capture; log format/content is governed by OPS-050 (app-side).
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=rms-api
+
+[Install]
+WantedBy=multi-user.target

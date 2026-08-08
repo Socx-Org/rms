@@ -1,0 +1,52 @@
+# reference/systemd, adapted for RMS (ADR-040). Deliberate deviations from
+# the template, both load-bearing:
+#   - The worker is Python (SQLAlchemy/psycopg2), not Node -- the template's
+#     ExecStart assumes a Node worker (.../dist/index.js). Runs from a venv
+#     in APP_DIR/shared (persistent across releases, not baked into each
+#     versioned release dir -- venvs aren't relocatable, and shared/ is
+#     exactly the reference/systemd convention for state that outlives a
+#     single release).
+#   - LoadCredential= names are database_url/smtp_password, matching
+#     apps/worker/engine/credentials.py.
+
+[Unit]
+Description=rms worker
+After=network-online.target postgresql.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=rms
+Group=rms
+
+WorkingDirectory=/opt/rms/current/apps/worker
+ExecStart=/opt/rms/shared/venv/bin/python /opt/rms/current/apps/worker/main.py
+Restart=on-failure
+RestartSec=5
+
+Environment=NODE_ENV=production
+Environment=SOCX_ENV=production
+Environment=USE_SEND_GRID=0
+Environment=SMTP_HOST=smtp.hostinger.com
+Environment=SMTP_PORT=465
+Environment=SMTP_USER=info@basemathlimited.co.uk
+Environment=SMTP_FROM_EMAIL=info@basemathlimited.co.uk
+Environment=SMTP_FROM_NAME=Socx Reminder Management System
+
+# Secrets via systemd credentials (ADR-130, SEC-010.3) -- read by
+# apps/worker/engine/credentials.py at startup.
+LoadCredential=database_url:/etc/credentials/rms/database_url
+LoadCredential=smtp_password:/etc/credentials/rms/smtp_password
+
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+ReadWritePaths=/opt/rms/shared
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=rms-worker
+
+[Install]
+WantedBy=multi-user.target
