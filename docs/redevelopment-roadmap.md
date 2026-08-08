@@ -12,7 +12,7 @@ Tracked as `Product: RMS` items in GitHub Project #2 ("SOCX Application Modernis
 | 1 | Infrastructure Alignment | **Done** — `Socx-Org/rms#9` |
 | 2A | Structural Refactoring | **Done** — `Socx-Org/rms#17` |
 | 2B | Data Layer Modernisation | **Closed** — resolved at the platform level, no RMS code change required (`socx-platform#94`/`ADR-200`) |
-| — | Platform Alignment | Not started (renamed from "Phase 3") |
+| — | Platform Alignment | **Done** — `socx-platform#97` (renamed from "Phase 3") |
 
 No phase is blocked by Platform Evolution work unless a dependency is genuinely critical — interim implementations are used and swapped later where a platform capability doesn't exist yet.
 
@@ -65,9 +65,17 @@ Separately, real discovery during this phase found RMS's production database has
 
 **Closed 2026-08-08.**
 
-### Platform Alignment (not started, renamed from "Phase 3")
+### Platform Alignment (done, renamed from "Phase 3")
 
-Final reconciliation against whatever Platform Patterns / Shared Platform Assets emerged as real, validated capabilities during Phases 1–2B (e.g. Configuration Management, if it graduates from Platform Pattern to Shared Platform Asset per `ADR`/`ENG-070` governance).
+Final reconciliation against whatever Platform Patterns / Shared Platform Assets emerged as real, validated capabilities during Phases 1–2B. Real discovery (2026-08-08) checked three candidates from RMS's actual work, not assumed:
+
+- **Configuration Management** (`system_settings`) — real, validated within RMS across two runtimes (API + worker), but the programme's own "validated across ≥2 apps" graduation criterion isn't met (RMS is still the only real, live application). Documented as an early Platform Pattern, not promoted to a Shared Platform Asset: `socx-platform`'s `APP-020`.
+- **`reference/deployment`'s Python-worker rollback limitation** — real, already self-documented in RMS's own `deploy.yml` comments, never fed back to the platform. Recorded in `reference/deployment/README.md`'s own Design Decisions, not fixed (no second real Python-worker deployment exists yet to validate a general solution against).
+- **`reference/nginx`'s static/API split** — checked, found to be a non-issue: its own "Expected Adaptations" section already anticipated exactly this per-app customisation; RMS's real split (`#14`) is that working as designed, not a missing pattern.
+
+**Closed 2026-08-08, `socx-platform#97`, merged as PR #98.**
+
+**This closes the RMS Redevelopment Roadmap.** All phases (0, 1, 2A, 2B, Platform Alignment) are done. Remaining open items are tracked separately, not blocking: `Socx-Org/rms#24` (backups, deliberately deferred pending real user data).
 
 ## Related Documents
 
