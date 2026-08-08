@@ -15,7 +15,11 @@ concurrency:
 jobs:
 
   # ── API integration tests (Node / Jest) ────────────────────────────────────
-  # Runs on every push to main and every PR targeting main.
+  # Runs on every push to main and every PR targeting main. Node/Python
+  # versions match prod-lab-01's real, actual runtime (Ubuntu 26.04 LTS ships
+  # Node 24/Python 3.14 -- no Node 20/Python 3.12 available there), verified
+  # for real: 356/356 Jest and 55/55 pytest pass under these exact versions
+  # (2026-08-08).
   api-tests:
     name: API tests
     runs-on: ubuntu-latest
@@ -44,12 +48,12 @@ jobs:
 
       - uses: actions/setup-node@v6.3.0
         with:
-          node-version: '20'
+          node-version: '24'
           cache: 'npm'
 
       - uses: actions/setup-python@v6.2.0
         with:
-          python-version: '3.12'
+          python-version: '3.14'
 
       - name: Install Node dependencies
         run: npm ci
@@ -86,7 +90,7 @@ jobs:
 
       - uses: actions/setup-python@v6.2.0
         with:
-          python-version: '3.12'
+          python-version: '3.14'
 
       - name: Install dependencies
         run: |
@@ -97,143 +101,98 @@ jobs:
         working-directory: apps/worker
         run: pytest -q tests/
 
-  # ── Deploy to DigitalOcean droplet ────────────────────────────────────────  
+  # ── Deploy to prod-lab-01 (reference/deployment, ADR-040/ADR-150/OPS-030) ──
+  # Rewritten 2026-08-08 (#12) around reference/deployment's deploy-release.sh
+  # -- versioned release, health-gated restart, automatic rollback on
+  # failure -- replacing the old on-host `npm ci`/in-place-restart mechanism
+  # (which targeted a different, now-defunct environment) and the dead
+  # do-nginx-infra reference (superseded by reference/nginx, already live).
+  #
+  # Node is built here, not on the droplet, deliberately -- this runner is
+  # Linux (matching prod-lab-01), so native addons (bcrypt, Prisma's query
+  # engine) come out correctly built for the deploy target. Building the
+  # release locally on a different OS/arch and shipping node_modules doesn't
+  # work (hit this for real during #11's manual first deploy: a macOS-built
+  # bcrypt binding failed on the droplet with "invalid ELF header").
+  #
+  # The Python worker isn't covered by deploy-release.sh's atomicity --
+  # that script is Node-oriented and knows nothing about venvs. The worker's
+  # venv lives in APP_DIR/shared (persistent across releases; venvs aren't
+  # relocatable, so baking one into a versioned release directory doesn't
+  # work either) and is updated as a step before the release swap, using the
+  # new commit's requirements.txt. A known, documented limitation: if the
+  # venv update step fails, the deploy step aborts before deploy-release.sh
+  # runs, so a bad requirements.txt can't ship -- but once deploy-release.sh
+  # restarts rms-worker.service as part of its own health-gated swap, a
+  # worker-specific runtime failure doesn't trigger its rollback path the
+  # same principled way an API health-check failure does.
   deploy:
     name: Deploy
     needs: [api-tests, worker-tests]
-    if: github.event_name == 'push'
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     environment: prod-lab-01
 
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Setup Node
-        uses: actions/setup-node@v4
+      - uses: actions/checkout@v4
         with:
-          node-version: "20"
+          fetch-depth: 0 # needed so `git describe --tags` can see tags
+
+      - name: Compute release version
+        id: version
+        run: |
+          if git describe --tags --exact-match >/dev/null 2>&1; then
+            VERSION="$(git describe --tags --exact-match)"
+          else
+            VERSION="0.0.0-$(git rev-parse --short HEAD)"
+          fi
+          echo "Deploying version: ${VERSION}"
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
           cache: npm
 
+      # Full install (postinstall runs `prisma generate`, needed before
+      # pruning removes the `prisma` CLI devDependency).
       - name: Install dependencies
         run: npm ci
 
-      - name: Build frontend
-        run: npm run build --workspace=apps/web
+      - name: Prune to production dependencies
+        run: npm prune --omit=dev
 
-      # - name: Test API
-      #   run: npm run test --workspace=apps/api --if-present
-
-      - name: Install production Node deps for server
+      - name: Package release
         run: |
-          # Install only production dependencies for the API workspace so we can
-          # include them in the release archive and avoid running `npm ci` on the droplet.
-          npm ci --workspace=apps/api --omit=dev
+          tar -czf release.tar.gz \
+            apps/api apps/worker packages/db \
+            node_modules package.json package-lock.json
 
-      - name: Package repo (include apps/api/node_modules)
+      - name: Deploy to droplet
+        env:
+          DROPLET_HOST: ${{ secrets.DROPLET_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          VERSION: ${{ steps.version.outputs.version }}
         run: |
-          RELEASE_DIR="$RUNNER_TEMP/release"
-          rm -rf "$RELEASE_DIR"
-          mkdir -p "$RELEASE_DIR"
-          # Copy repository while excluding node_modules (we'll add apps/api/node_modules explicitly)
-          rsync -a --exclude='.git' --exclude='**/node_modules' ./ "$RELEASE_DIR/"
-          # If production deps were installed for apps/api, copy them into the release
-          if [ -d "apps/api/node_modules" ]; then
-            mkdir -p "$RELEASE_DIR/apps/api"
-            cp -a apps/api/node_modules "$RELEASE_DIR/apps/api/"
-          fi
-          ARCHIVE_PATH="$RUNNER_TEMP/release.tgz"
-          tar -C "$RELEASE_DIR" -czf "$ARCHIVE_PATH" .
-          cp "$ARCHIVE_PATH" ./release.tgz
+          set -euo pipefail
+          KEY_FILE="$(mktemp)"
+          trap 'rm -f "$KEY_FILE"' EXIT
+          printf '%s\n' "$DEPLOY_SSH_KEY" > "$KEY_FILE"
+          chmod 600 "$KEY_FILE"
 
-      - name: Upload to droplet
-        uses: appleboy/scp-action@v0.1.7
-        with:
-          host: ${{ secrets.DROPLET_HOST }}
-          username: ${{ secrets.DROPLET_USER }}
-          key: ${{ secrets.DROPLET_SSH_KEY }}
-          source: "release.tgz"
-          target: "/tmp"
+          SSH_OPTS="-i $KEY_FILE -o StrictHostKeyChecking=accept-new"
+          REMOTE="${DEPLOY_USER}@${DROPLET_HOST}"
+          REMOTE_TARBALL="/tmp/release-${VERSION}.tar.gz"
+          REMOTE_REQUIREMENTS="/tmp/requirements-${VERSION}.txt"
 
-      - name: Check remote systemd unit files
-        uses: appleboy/ssh-action@v1.0.3
-        with:
-          host: ${{ secrets.DROPLET_HOST }}
-          username: ${{ secrets.DROPLET_USER }}
-          key: ${{ secrets.DROPLET_SSH_KEY }}
-          script: |
-            set -eu
-            echo "Checking for systemd unit files"
-            for svc in rms-web rms-api rms-worker; do
-              if [ -f "/etc/systemd/system/${svc}.service" ]; then
-                echo "Found /etc/systemd/system/${svc}.service"
-              else
-                echo "MISSING: /etc/systemd/system/${svc}.service"
-                echo "Expected source (do-nginx-infra nginx-config branch):"
-                echo "  https://github.com/socx/do-nginx-infra/tree/nginx-config -> sites/${svc} or nginx/sites-available/${svc}"
-              fi
-            done
+          # Worker venv first, using the new commit's requirements.txt, so a
+          # bad dependency change fails here -- before the release ships.
+          scp $SSH_OPTS apps/worker/requirements.txt "${REMOTE}:${REMOTE_REQUIREMENTS}"
+          ssh $SSH_OPTS "$REMOTE" \
+            "sudo -u rms env HOME=/opt/rms/shared/npm-home /opt/rms/shared/venv/bin/pip install --quiet -r '${REMOTE_REQUIREMENTS}' && rm -f '${REMOTE_REQUIREMENTS}'"
 
-      - name: Deploy and restart services
-        uses: appleboy/ssh-action@v1.0.3
-        with:
-          host: ${{ secrets.DROPLET_HOST }}
-          username: ${{ secrets.DROPLET_USER }}
-          key: ${{ secrets.DROPLET_SSH_KEY }}
-          script: |
-            set -euo pipefail
-            DEPLOY_USER="$(id -un)"
-            APP_DIR="/opt/apps/rms"
-            sudo mkdir -p "$APP_DIR"
-            sudo chown -R "$DEPLOY_USER:$DEPLOY_USER" "$APP_DIR"
-            if [ -s "$HOME/.nvm/nvm.sh" ]; then
-              . "$HOME/.nvm/nvm.sh"
-              nvm use node >/dev/null 2>&1 || true
-            fi
-            export PATH="$HOME/.nvm/versions/node/*/bin:$HOME/node_modules/.bin:/usr/local/bin:/usr/bin:$PATH"
-            NPM_BIN="$(command -v npm || true)"
-            if [ -z "$NPM_BIN" ]; then
-              echo "npm not found on remote host. Install Node.js for deploy user or system-wide." >&2
-              exit 1
-            fi
-
-            tar -xzf /tmp/release.tgz -C "$APP_DIR"
-            rm -f /tmp/release.tgz
-
-            cd "$APP_DIR"
-            # Run npm install on the remote. If it fails (OOM or other), fail fast
-            # to avoid leaving services in a half-updated state.
-            if ! "$NPM_BIN" ci; then
-              echo "Remote npm ci failed — aborting deployment to avoid partial upgrade." >&2
-              exit 1
-            fi
-
-            # Ensure Python worker venv and dependencies are present at the expected path
-            if [ -f "apps/worker/requirements.txt" ]; then
-              if [ ! -d "apps/worker/.venv" ]; then
-                python3 -m venv apps/worker/.venv
-              fi
-              apps/worker/.venv/bin/pip install --upgrade pip
-              apps/worker/.venv/bin/pip install -r apps/worker/requirements.txt
-              # do not attempt to change permissions on files we may not own
-              # (some environments prevent chmod by non-root). Assume venv python is executable.
-              :
-            fi
-
-            # Reload systemd to pick up any externally-managed unit file changes
-            sudo systemctl daemon-reload
-            for svc in rms-web rms-api rms-worker; do
-              if systemctl list-unit-files --type=service | grep -q "^${svc}\.service"; then
-                sudo systemctl enable "$svc"
-                # Stop any existing restart loop, clear failure counters, then start once.
-                sudo systemctl stop "$svc" || true
-                sudo systemctl reset-failed "$svc" || true
-                sudo systemctl start "$svc" || {
-                  echo "Service $svc failed to start; showing journal:";
-                  sudo journalctl -u "$svc" -n 200 --no-pager || true
-                }
-                sudo systemctl status "$svc" --no-pager || true
-              else
-                echo "Skipping missing unit: ${svc}.service"
-              fi
-            done
+          scp $SSH_OPTS release.tar.gz "${REMOTE}:${REMOTE_TARBALL}"
+          ssh $SSH_OPTS "$REMOTE" \
+            "sudo SERVICES='rms-api.service rms-worker.service' HEALTH_URL='http://127.0.0.1:3002/' /opt/deploy/scripts/deploy-release.sh rms '${VERSION}' '${REMOTE_TARBALL}'"
+          ssh $SSH_OPTS "$REMOTE" "rm -f '${REMOTE_TARBALL}'"
